@@ -11,15 +11,11 @@ static int FRAME = 0;
 static u16 *VRAM;
 static volatile u16* Scanline = (volatile u16*)0x4000006;
 
-typedef struct {
-    int x;
-    int y;
-} Vec2i;
+static Vec2i LightMin;
+static Vec2i LightMax;
 
-typedef struct {
-    u8 r;
-    u8 a;
-} Vec2u8;
+static Vec2i OccluderMin;
+static Vec2i OccluderMax;
 
 static const int LUT_Range[] = {
     0, 3*256, 15*256, 63*256
@@ -37,16 +33,24 @@ static const Vec2i LUT_InvDir[] = {
     {257, 5461}, {259, 1771}, {264, 1057}, {271, 762}, {283, 601}, {299, 500}, {319, 431}, {346, 383}, {383, 346}, {431, 319}, {500, 299}, {601, 283}, {762, 271}, {1057, 264}, {1771, 259}, {5461, 257}, {-5461, 257}, {-1771, 259}, {-1057, 264}, {-762, 271}, {-601, 283}, {-500, 299}, {-431, 319}, {-383, 346}, {-346, 383}, {-319, 431}, {-299, 500}, {-283, 601}, {-271, 762}, {-264, 1057}, {-259, 1771}, {-257, 5461}, {-257, -5461}, {-259, -1771}, {-264, -1057}, {-271, -762}, {-283, -601}, {-299, -500}, {-319, -431}, {-346, -383}, {-383, -346}, {-431, -319}, {-500, -299}, {-601, -283}, {-762, -271}, {-1057, -264}, {-1771, -259}, {-5461, -257}, {5461, -257}, {1771, -259}, {1057, -264}, {762, -271}, {601, -283}, {500, -299}, {431, -319}, {383, -346}, {346, -383}, {319, -431}, {299, -500}, {283, -601}, {271, -762}, {264, -1057}, {259, -1771}, {257, -5461}
 };
 
-u16 pack(Vec2u8 v) {
+static const Vec2i LUT_HC_Offset[] = {
+    {0 * (SW >> 1), 0 * (SH >> 1) * GBA_SW}, {1 * (SW >> 1), 0 * (SH >> 1) * GBA_SW}, {0 * (SW >> 1), 1 * (SH >> 1) * GBA_SW}, {1 * (SW >> 1), 1 * (SH >> 1) * GBA_SW},
+    {0 * (SW >> 2), 0 * (SH >> 2) * GBA_SW}, {1 * (SW >> 2), 0 * (SH >> 2) * GBA_SW}, {2 * (SW >> 2), 0 * (SH >> 2) * GBA_SW}, {3 * (SW >> 2), 0 * (SH >> 2) * GBA_SW},
+    {0 * (SW >> 2), 1 * (SH >> 2) * GBA_SW}, {1 * (SW >> 2), 1 * (SH >> 2) * GBA_SW}, {2 * (SW >> 2), 1 * (SH >> 2) * GBA_SW}, {3 * (SW >> 2), 1 * (SH >> 2) * GBA_SW},
+    {0 * (SW >> 2), 2 * (SH >> 2) * GBA_SW}, {1 * (SW >> 2), 2 * (SH >> 2) * GBA_SW}, {2 * (SW >> 2), 2 * (SH >> 2) * GBA_SW}, {3 * (SW >> 2), 2 * (SH >> 2) * GBA_SW},
+    {0 * (SW >> 2), 3 * (SH >> 2) * GBA_SW}, {1 * (SW >> 2), 3 * (SH >> 2) * GBA_SW}, {2 * (SW >> 2), 3 * (SH >> 2) * GBA_SW}, {3 * (SW >> 2), 3 * (SH >> 2) * GBA_SW},
+};
+
+inline u16 pack(Vec2u8 v) {
     return ((u16)v.r << 8) | v.a;
 }
 
-Vec2u8 unpack(u16 u) {
+inline Vec2u8 unpack(u16 u) {
     Vec2u8 v = {(u >> 8) & 0xFF, u & 0xFF};
     return v;
 }
 
-u16 Gradient(int t){
+inline u16 Gradient(int t){
     int b = t;
     if (b > 31) b = 31;
     if (b < 0)  b = 0;
@@ -62,11 +66,11 @@ u16 Gradient(int t){
     return RGB(r, g, b);
 }
 
-int min(int a, int b){
+inline int min(int a, int b){
     return a < b ? a : b;
 }
 
-int max(int a, int b){
+inline int max(int a, int b){
     return a > b ? a : b;
 }
 
@@ -94,13 +98,8 @@ bool in_range(Vec2i a, Vec2i b){
 
 Vec2u8 rayTrace(Vec2i ro, Vec2i ird, Vec2i range)
 {
-    const Vec2i lbmin = {10 + FRAME, 55};
-    const Vec2i lbmax = {10 + FRAME + 10, 55 + 10};
-    const Vec2i s1 = ray_box_2d(ro, ird, range, lbmin, lbmax);
-
-    const Vec2i obmin = {35, 35};
-    const Vec2i obmax = {35 + 10, 35 + 10};
-    const Vec2i s2 = ray_box_2d(ro, ird, range, obmin, obmax);
+    const Vec2i s1 = ray_box_2d(ro, ird, range, LightMin, LightMax);
+    const Vec2i s2 = ray_box_2d(ro, ird, range, OccluderMin, OccluderMax);
 
     const bool b1 = in_range(s1, range);
     const bool b2 = in_range(s2, range);
@@ -121,7 +120,6 @@ Vec2u8 rayTrace(Vec2i ro, Vec2i ird, Vec2i range)
 void ComputeCascade(int cascadeLevel, int dirShift, u16* lowerCascade, u16* higherCascade)
 {
     const int blockSqrtCount = 1 << cascadeLevel;
-    const int blockCount = blockSqrtCount * blockSqrtCount;
     const Vec2i blockDim = { SW >> cascadeLevel, SH >> cascadeLevel };
     const Vec2i rayRange = { LUT_Range[cascadeLevel], LUT_Range[cascadeLevel+1] };
 
@@ -137,11 +135,13 @@ void ComputeCascade(int cascadeLevel, int dirShift, u16* lowerCascade, u16* high
 
             for(int y = 0; y < blockDim.y; y++)
             {
+                int YPointer = (y >> 1) * GBA_SW;
                 int rayY = y << cascadeLevel;
-                int vramOffsetY = (y + offsetY) * GBA_SW;
+                int vramOffset = (y + offsetY) * GBA_SW + offsetX;
 
                 for(int x = 0; x < blockDim.x; x++)
                 {
+                    int halfX = x >> 1;
                     Vec2i rayOrigin = { x << cascadeLevel, rayY};
 
                     int finalLight = 0;
@@ -157,26 +157,22 @@ void ComputeCascade(int cascadeLevel, int dirShift, u16* lowerCascade, u16* high
                         if(cascadeLevel != 2 && radiance.a != 0)
                         {
                             // Merging with Higher Cascade
-                            Vec2i position = {x >> 1, y >> 1};
-                            int positionOffsetX = dirIndex % (blockSqrtCount << 1);
-                            int positionOffsetY = dirIndex / (blockSqrtCount << 1);
-                            
-                            if(position.x >= (blockDim.x >> 1)) position.x = (blockDim.x >> 1) - 1;
-                            if(position.y >= (blockDim.y >> 1)) position.y = (blockDim.y >> 1) - 1;
+                            Vec2i positionOffset = LUT_HC_Offset[dirIndex + dirShift];
 
-                            position.x += positionOffsetX * (blockDim.x >> 1);
-                            position.y += positionOffsetY * (blockDim.y >> 1);
+                            Vec2i position = {halfX, YPointer};
+                            position.x += positionOffset.x;
+                            position.y += positionOffset.y;
 
-                            Vec2u8 higherRadiance0 = unpack(higherCascade[(position.y + 0) * GBA_SW + (position.x + 0)]);
-                            Vec2u8 higherRadiance1 = unpack(higherCascade[(position.y + 1) * GBA_SW + (position.x + 0)]);
-                            Vec2u8 higherRadiance2 = unpack(higherCascade[(position.y + 0) * GBA_SW + (position.x + 1)]);
-                            Vec2u8 higherRadiance3 = unpack(higherCascade[(position.y + 1) * GBA_SW + (position.x + 1)]);
+                            u16 h0 = higherCascade[position.y +          position.x + 0];
+                            u16 h1 = higherCascade[position.y + GBA_SW + position.x + 0];
+                            u16 h2 = higherCascade[position.y +          position.x + 1];
+                            u16 h3 = higherCascade[position.y + GBA_SW + position.x + 1];
 
-                            int higherRadianceL = (higherRadiance0.r + higherRadiance1.r + higherRadiance2.r + higherRadiance3.r) >> 2;
-                            int higherRadianceV = (higherRadiance0.a + higherRadiance1.a + higherRadiance2.a + higherRadiance3.a) >> 2;
+                            int higherRadianceL = ((h0>>8) + (h1>>8) + (h2>>8) + (h3>>8)) >> 2;
+                            int higherRadianceV = ((h0&255) + (h1&255) + (h2&255) + (h3&255)) >> 2;
                             
                             radiance.r += (higherRadianceL * radiance.a) >> 8;
-                            radiance.a = (radiance.a * higherRadianceV) >> 8;
+                            radiance.a = (higherRadianceV * radiance.a) >> 8;
                         }
 
                         finalLight += radiance.r;
@@ -187,7 +183,7 @@ void ComputeCascade(int cascadeLevel, int dirShift, u16* lowerCascade, u16* high
                     finalVisibility = finalVisibility >> 2;
 
                     Vec2u8 col = {finalLight, finalVisibility};
-                    lowerCascade[vramOffsetY + (x + offsetX)] = pack(col);
+                    lowerCascade[vramOffset + x] = pack(col);
                 }
             }
         }
@@ -218,6 +214,12 @@ int main()
             DISPCNT |= BACKB; 
             VRAM = (u16*)VRAM_F;
         }
+
+        LightMin = (Vec2i){10 + FRAME, 55};
+        LightMax = (Vec2i){10 + FRAME + 10, 55 + 10};
+
+        OccluderMin = (Vec2i){35, 35};
+        OccluderMax = (Vec2i){35 + 10, 35 + 10};
 
         //Compute 3 cascdes
         ComputeCascade(2, 20, VRAM, 0);

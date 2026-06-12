@@ -3,6 +3,16 @@ typedef unsigned char  u8;
 typedef unsigned short u16;
 typedef unsigned long  u32; 
 
+typedef struct {
+    int x;
+    int y;
+} Vec2i;
+
+typedef struct {
+    u8 r;
+    u8 a;
+} Vec2u8;
+
 //---Video buffer---
 #define VRAM_F         (u16*)0x6000000 
 #define VRAM_B         (u16*)0x600A000
